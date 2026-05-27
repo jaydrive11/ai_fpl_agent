@@ -37,20 +37,11 @@ heuristics just need to consume them.
 
 ---
 
-### 2. Auto-substitutes in scoring (~+0.5-1 /GW)
-**Why:** Currently `_score_xi` sums only the starting XI's actuals. In
-real FPL, when a starter scores 0 (didn't play), the highest-priority bench
-player who DID play takes their slot automatically. We're missing ~1-2
-pts/GW from these auto-subs.
-
-**Implementation:**
-- Bench needs a priority order (currently we just have a set).
-- Modify `_score_xi`: for each starting XI player who scored 0, sub in the
-  highest-priority bench player who scored > 0 and respects formation
-  validity.
-
-**Files to touch:** `src/fpl_agent/backtest.py::_score_xi`, possibly
-`Selection.bench` to be an ordered list.
+### 2. ~~Auto-substitutes in scoring~~ DONE — +0.4 /GW agent, +2.3 static (milestone 12)
+**Status:** shipped. `_apply_auto_subs` swaps blanked starters for bench
+players (in priority order, formation-respecting). Agent gained +0.4/GW;
+static baseline gained +2.3/GW (it's more vulnerable to blanks since it
+can't transfer). 8 tests added in `tests/test_auto_subs.py`.
 
 ---
 
