@@ -77,6 +77,13 @@ def _actuals_lookup(df_raw: pd.DataFrame, season: str, gw: int) -> dict[int, flo
     return sub.groupby("element")["total_points"].sum().to_dict()
 
 
+def _minutes_lookup(df_raw: pd.DataFrame, season: str, gw: int) -> dict[int, int]:
+    """Map element id -> actual minutes played in (season, gw),
+    summed across any DGW fixtures. Used by auto-sub logic."""
+    sub = df_raw[(df_raw["season"] == season) & (df_raw["GW"] == gw)]
+    return sub.groupby("element")["minutes"].sum().astype(int).to_dict()
+
+
 def _players_with_actuals(
     df_raw: pd.DataFrame, season: str, gw: int, prior_players: dict[int, Player]
 ) -> list[Player]:
@@ -127,16 +134,98 @@ def _fill_missing_squad_members(
     return pool + extras
 
 
+def _ordered_bench(bench: list[Player]) -> list[Player]:
+    """Bench in FPL auto-sub priority order: bench GK first (only subs in for
+    starting GK), then outfield by predicted xpts descending (highest = first
+    sub priority — your best bench player comes on first)."""
+    gks = sorted([p for p in bench if p.position == 1], key=lambda p: -p.xpts)
+    outfield = sorted([p for p in bench if p.position != 1], key=lambda p: -p.xpts)
+    return gks + outfield
+
+
+def _formation_valid(xi: list[Player]) -> bool:
+    """Check FPL formation rules: 1 GK, 3-5 DEF, 2-5 MID, 1-3 FWD, total 11."""
+    if len(xi) != 11:
+        return False
+    counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+    for p in xi:
+        counts[p.position] += 1
+    return (counts[1] == 1
+            and 3 <= counts[2] <= 5
+            and 2 <= counts[3] <= 5
+            and 1 <= counts[4] <= 3)
+
+
+def _apply_auto_subs(
+    starting_xi: list[Player],
+    bench: list[Player],
+    actuals_min: dict[int, int],
+) -> list[Player]:
+    """FPL auto-sub rules: when an XI player gets 0 minutes, a bench player
+    (in priority order) who played 1+ minutes is substituted in, provided
+    the resulting formation stays valid.
+
+    The bench GK can only replace the starting GK. Bench outfield players
+    can replace any blanked starting outfielder — pick the first in priority
+    order whose substitution keeps the formation legal.
+    """
+    eff_xi = list(starting_xi)
+    ordered = _ordered_bench(bench)
+    bench_gk = next((p for p in ordered if p.position == 1), None)
+    bench_outfield = [p for p in ordered if p.position != 1]
+
+    # --- 1. Goalkeeper sub (special case — must be 1 GK in XI) ---
+    for i, p in enumerate(eff_xi):
+        if p.position != 1:
+            continue
+        if actuals_min.get(p.id, 0) == 0 and bench_gk is not None:
+            if actuals_min.get(bench_gk.id, 0) >= 1:
+                eff_xi[i] = bench_gk
+        break  # only ever one GK
+
+    # --- 2. Outfield subs (try each bench player in priority order) ---
+    used_outfield: set[int] = set()
+    for sub in bench_outfield:
+        if actuals_min.get(sub.id, 0) < 1:
+            continue
+        if sub.id in used_outfield:
+            continue
+        # Find a blanked outfield XI player we can swap this sub for, keeping
+        # the formation legal.
+        for i, starter in enumerate(eff_xi):
+            if starter.position == 1:
+                continue
+            if actuals_min.get(starter.id, 0) >= 1:
+                continue
+            # Trial swap
+            candidate = list(eff_xi)
+            candidate[i] = sub
+            if _formation_valid(candidate):
+                eff_xi[i] = sub
+                used_outfield.add(sub.id)
+                break  # this sub is done
+
+    return eff_xi
+
+
 def _score_xi(starting_xi: list[Player], captain: Player, actuals: dict[int, float],
               hits: int = 0, hit_cost: float = 4.0,
-              bench: list[Player] | None = None, chip: str = "") -> float:
+              bench: list[Player] | None = None, chip: str = "",
+              actuals_min: dict[int, int] | None = None) -> float:
     """Score a gameweek, honouring chip effects.
 
     - normal:  XI total + 1x captain extra (= 2x captain in total) - hits*4
     - TC:      XI total + 2x captain extra (= 3x captain in total) - hits*4
-    - BB:      normal + bench's actual points
+    - BB:      normal + bench's actual points (no auto-sub — whole 15 plays)
     - WC:      normal with hit cost zeroed (transfers were free)
+
+    If `actuals_min` is given (and chip != "BB"), applies FPL auto-subs:
+    bench players replace XI players who got 0 minutes, in bench priority.
     """
+    # Auto-subs only matter when not playing BB (BB means all 15 score anyway).
+    if actuals_min is not None and bench is not None and chip != "BB":
+        starting_xi = _apply_auto_subs(starting_xi, bench, actuals_min)
+
     xi_pts = sum(actuals.get(p.id, 0.0) for p in starting_xi)
     cap_pts = actuals.get(captain.id, 0.0)
     cap_multiplier = 2 if chip == "TC" else 1
@@ -317,6 +406,7 @@ def run_backtest(
 
     for gw in gws_to_play:
         actuals = _actuals_lookup(df_raw, season, gw)
+        actuals_min = _minutes_lookup(df_raw, season, gw)
         horizon = _horizon_xpts_by_id(df_feat, preds, season, gw + 1, horizon_h) \
             if horizon_h > 0 else None
         pool = build_players_for_gw(df_feat, preds, season, gw,
@@ -358,7 +448,8 @@ def run_backtest(
             predicted_points=sel.expected_points,
             actual_points=_score_xi(sel.starting_xi, sel.captain, actuals,
                                     hits=sel.hits, hit_cost=hit_cost,
-                                    bench=sel.bench, chip=chip_played),
+                                    bench=sel.bench, chip=chip_played,
+                                    actuals_min=actuals_min),
             hits=sel.hits,
             transfers_made=len(sel.transfers_in),
             captain_name=sel.captain.name,
@@ -390,8 +481,9 @@ def run_backtest(
             for p in static_squad
         ]
         try:
-            xi, cap, _ = pick_xi(static_now)
-            static_pts = _score_xi(xi, cap, actuals)
+            xi, cap, static_bench = pick_xi(static_now)
+            static_pts = _score_xi(xi, cap, actuals, bench=static_bench,
+                                   actuals_min=actuals_min)
         except RuntimeError:
             xi, cap, static_pts = [], None, 0.0
 

@@ -21,6 +21,7 @@ this in 6 months understands *why* the code looks the way it does, not just *wha
 | 9b | Captain alpha sweep (α ∈ {0.85, 0.9, 0.95, 0.99}) | 62.0 *(negative result)* |
 | 10 | **Two-stage hurdle model** | **65.0** *(+3.0)* — **top-10k** |
 | 11 | FDR-aware chip timing (best-remaining + 90% peak tolerance + floor) | 64.9 *(noise — see milestone 11)* |
+| 12 | Auto-subs in scoring (FPL bench substitution rules) | 65.3 *(+0.4 agent, +2.3 static)* |
 
 Reference: FPL average ~53, top-10k ~65, world #1 ~75.
 
@@ -353,6 +354,55 @@ underlying budget is small. Chips have a hard cap on their potential
 contribution; smarter timing within that cap helps marginally, not
 dramatically. Most of the remaining gap to top-10k+ is in better player
 selection (more data sources), not better chip timing.
+
+---
+
+## Milestone 12: Auto-subs in scoring (+0.4 /GW)
+
+**Decision:** Implement FPL's bench-substitution rules in `_score_xi`. When
+an XI player gets 0 minutes (didn't play), a bench player who DID play comes
+on in their place, in bench priority order, provided the resulting formation
+stays valid.
+
+**Why** (from milestone 10 diagnostic notes / NEXT_STEPS.md):
+- Previously `_score_xi` summed only the starting XI's actuals. When a
+  starter blanked (e.g. injured / dropped / rotated), we lost their slot's
+  full value even when a perfectly good bench player came on in real FPL.
+- Estimated impact: +0.5-1 /GW based on typical FPL "bench points" reporting.
+
+**Implementation:**
+- `_minutes_lookup()`: per-GW dict of actual minutes by element id.
+- `_ordered_bench()`: bench GK first (only subs in for starting GK), then
+  outfield by predicted xpts descending (most-trusted bench player = first sub).
+- `_formation_valid()`: explicit 1 GK / 3-5 DEF / 2-5 MID / 1-3 FWD check.
+- `_apply_auto_subs()`: for each XI player with 0 mins, find the first
+  bench player (in priority) who played and whose substitution keeps
+  formation valid.
+- `_score_xi` extended with `actuals_min` param. Auto-subs skipped under BB
+  (whole 15 plays anyway — double-counting would inflate the score).
+
+**Result:** 64.9 → **65.3 /GW** (+0.4 agent). Static baseline jumped more:
+53.2 → 55.5 (+2.3) — expected, because static is more vulnerable to blanks
+(no transfers to swap out problem players).
+
+| Season | Before (m11) | + Auto-subs | Δ |
+|---|---:|---:|---:|
+| 2023-24 | 61.8 | 61.9 | +0.1 |
+| 2024-25 | 69.0 | 69.2 | +0.2 |
+| 2025-26 | 63.8 | 64.9 | +1.1 |
+| avg | 64.9 | **65.3** | **+0.4** |
+
+**Lesson:** Modeling fidelity matters. The agent's transfer logic was already
+papering over the blank-starter problem by transferring problem players out.
+Auto-subs help the agent only marginally because there aren't many residual
+blanks to cover. But the static-squad baseline jumps a lot because it has
+NO transfer ability — auto-subs are its only defense against blanks. This
+shows the static comparison was previously understating the value of just
+having a sensible squad.
+
+8 new tests in `tests/test_auto_subs.py` cover: formation validity (accept
+3-4-3, 3-5-2; reject 0-GK, 2-DEF), bench ordering, GK sub, outfield sub
+respecting formation, skipping blanked bench, BB conflict.
 
 ---
 
