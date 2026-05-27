@@ -20,6 +20,7 @@ this in 6 months understands *why* the code looks the way it does, not just *wha
 | 9 | Fixture-difficulty features (teams.csv) | 62.0 *(+1.1)* |
 | 9b | Captain alpha sweep (α ∈ {0.85, 0.9, 0.95, 0.99}) | 62.0 *(negative result)* |
 | 10 | **Two-stage hurdle model** | **65.0** *(+3.0)* — **top-10k** |
+| 11 | FDR-aware chip timing (best-remaining + 90% peak tolerance + floor) | 64.9 *(noise — see milestone 11)* |
 
 Reference: FPL average ~53, top-10k ~65, world #1 ~75.
 
@@ -297,6 +298,61 @@ Static-squad baseline also rose 49.7 → 53.2 (initial picks more calibrated).
 Each major lift (L2, P90, lookahead, two-stage) came from running a
 diagnostic that pointed at a specific failure mode, then targeting it
 precisely.
+
+---
+
+## Milestone 11: FDR-aware chip timing — NEGATIVE result
+
+**Decision:** Replace fixed-threshold chip heuristics (TC fires at `ceiling > 11`,
+BB at `bench > 10`) with "save chips for the peak remaining GW" logic, using
+predictions for all remaining GWs as a forward-looking estimate.
+
+**Why** (from prior milestones):
+- Old chips fired identically every season — TC on GW3 (first Haaland fixture
+  above threshold), BB on GW3, WC mid-season on hits.
+- This wastes TC/BB on average weeks instead of saving them for genuine peak
+  opportunities (DGWs, fixture turns).
+- Plan was: pre-compute per-GW best captain ceiling + best bench total across
+  remaining season, fire chips only when this GW is near the peak.
+
+**Implementation:**
+- `_future_chip_estimates()`: at backtest start, computes for every GW the
+  max-possible captain ceiling and a proxy bench total (sum of xpts ranks 11-15
+  in that GW's pool).
+- `_decide_chip` extended with `current_gw + future_*_dicts` arguments.
+- Logic: fire if `current ≥ 0.9 × max(remaining)` AND `current ≥ absolute_floor`.
+- Strict "fire only if best-remaining" was too greedy — saved chips until the
+  literal last GWs. The 90% tolerance + floor gives some flexibility.
+
+**Result:** chips DO fire at different (and intuitively better) GWs — TC moved
+from GW3 to GW24-26 (mid-/late-season DGW area). But scoring barely moved:
+
+| Variant | 3-season avg /GW |
+|---|---:|
+| Old fixed-threshold | 65.0 |
+| Strict best-remaining | 64.8 |
+| Relaxed (90% + floor) | 64.9 |
+
+All within ±0.2 — noise. The diagnostic implied chips were a +1-2/GW lever;
+the actual marginal lift is essentially zero.
+
+**Why the lift was small:**
+1. Chips' total budget is small (3 chips × ~10-20 pts each = ~30-60 pts/season),
+   so even perfect timing has a ceiling.
+2. Far-future predictions are noisy — "save for the absolute best" is hard
+   when prediction error is larger than the gap between "good" and "best" GWs.
+3. Our test seasons don't have enough DGW-rich windows to differentiate
+   timing strategies clearly.
+
+**Decision:** Keep the new logic — it's structurally correct (more principled,
+matches how a thoughtful FPL player thinks about chips). Don't expect a
+material boost in season totals.
+
+**Lesson:** Diagnostic-implied lift estimates can be optimistic when the
+underlying budget is small. Chips have a hard cap on their potential
+contribution; smarter timing within that cap helps marginally, not
+dramatically. Most of the remaining gap to top-10k+ is in better player
+selection (more data sources), not better chip timing.
 
 ---
 

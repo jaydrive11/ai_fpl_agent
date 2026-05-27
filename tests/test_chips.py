@@ -104,3 +104,53 @@ def test_decide_chip_respects_one_chip_per_gw():
     # The TC and BB conditions are met, but only one chip per GW — they're untouched
     assert not chips.tc_used
     assert not chips.bb_used
+
+
+def test_tc_saved_when_much_better_future():
+    """When future GW has a much higher ceiling AND current is borderline,
+    TC should wait. (90% peak tolerance + floor.)"""
+    chips = ChipsState()
+    sel = Selection(
+        squad=[], starting_xi=[],
+        captain=Player(1, "C", 1, "T1", 3, 100, 8.0, ceiling_xpts=10.0),
+        bench=[], expected_points=20.0, cost=500,
+    )
+    # Future is 18 — current 10 is 56% of 18, below 90% threshold
+    future = {5: 10.0, 10: 18.0, 20: 12.0}
+    chip = _decide_chip(sel, None, chips,
+                        current_gw=5, future_cap_ceilings=future)
+    assert chip == ""
+    assert not chips.tc_used
+
+
+def test_tc_fires_when_near_peak_and_above_floor():
+    """When this GW is at the peak (or near it) AND above the floor, fire."""
+    chips = ChipsState()
+    sel = Selection(
+        squad=[], starting_xi=[],
+        captain=Player(1, "C", 1, "T1", 3, 100, 8.0, ceiling_xpts=15.0),
+        bench=[], expected_points=20.0, cost=500,
+    )
+    # Future is at 14 — current 15 is the peak, well above floor (11)
+    future = {5: 15.0, 10: 14.0, 20: 10.0}
+    chip = _decide_chip(sel, None, chips,
+                        current_gw=5, future_cap_ceilings=future)
+    assert chip == "TC"
+    assert chips.tc_used
+
+
+def test_tc_doesnt_fire_below_floor_even_if_peak():
+    """Even if this is the best remaining, don't fire TC on a weak week."""
+    chips = ChipsState()
+    sel = Selection(
+        squad=[], starting_xi=[],
+        captain=Player(1, "C", 1, "T1", 3, 100, 3.0, ceiling_xpts=5.0),
+        bench=[], expected_points=20.0, cost=500,
+    )
+    # Current 5 is the peak (everything else lower) but below floor 11
+    future = {5: 5.0, 10: 4.0, 20: 3.0}
+    chip = _decide_chip(sel, None, chips,
+                        current_gw=5, future_cap_ceilings=future,
+                        tc_ceiling_threshold=11.0)
+    assert chip == ""
+    assert not chips.tc_used

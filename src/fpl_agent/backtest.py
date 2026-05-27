@@ -151,6 +151,9 @@ def _decide_chip(
     sel_wildcard: Selection | None,
     chips: ChipsState,
     *,
+    current_gw: int | None = None,
+    future_cap_ceilings: dict[int, float] | None = None,
+    future_bench_totals: dict[int, float] | None = None,
     wc_min_hits_saved: int = 2,
     wc_gain_threshold: float = 30.0,
     tc_ceiling_threshold: float = 11.0,
@@ -158,36 +161,86 @@ def _decide_chip(
 ) -> str:
     """Decide which chip (if any) to play this GW.
 
-    Greedy heuristics, one chip per GW max, priority WC > TC > BB:
-      - WC: fire only when conservative. Triggers if either
-          (a) constrained pick was forced to take ≥ `wc_min_hits_saved` hits
-              (WC saves at least that many * 4 pts), OR
-          (b) unconstrained gain over constrained > `wc_gain_threshold`
-              (a deliberately strict bar — first backtest showed our model
-              over-trusts WC picks and cascades badly in following GWs).
-      - TC if captain's ceiling_xpts > `tc_ceiling_threshold`.
-      - BB if bench's predicted total > `bb_bench_threshold`.
+    Greedy heuristics, one chip per GW max, priority WC > TC > BB.
+
+    When `future_cap_ceilings` / `future_bench_totals` are provided (dicts
+    {gw: best_value}), TC and BB use "best remaining opportunity" logic:
+    fire only if this GW's value is ≥ the max across strictly-future GWs.
+    This is the secretary-style rule — fire when you've seen the best.
+
+    Falls back to fixed thresholds when no future estimates are given.
     """
+    # ---- WC: unchanged (hits-saved heuristic) ----
     if chips.available("WC") and sel_wildcard is not None:
         wc_gain = sel_wildcard.expected_points - sel_constrained.expected_points
         if sel_constrained.hits >= wc_min_hits_saved or wc_gain > wc_gain_threshold:
             chips.use("WC")
             return "WC"
 
+    # ---- TC ----
+    # Combined: fire if (within `peak_tolerance` of best remaining) AND (above floor).
+    # Strict "best remaining" was too greedy — held TC until last DGW, sometimes
+    # missing good earlier opportunities. The tolerance lets us fire on near-peak
+    # weeks; the floor keeps us from wasting it on weak weeks.
     if chips.available("TC"):
         cap = sel_constrained.captain
         ceiling = cap.ceiling_xpts if cap.ceiling_xpts is not None else cap.xpts
-        if ceiling > tc_ceiling_threshold:
+        if future_cap_ceilings is not None and current_gw is not None:
+            future_vals = [v for g, v in future_cap_ceilings.items() if g > current_gw]
+            best_future = max(future_vals) if future_vals else 0.0
+            within_peak = ceiling >= 0.90 * max(best_future, ceiling)
+            above_floor = ceiling >= tc_ceiling_threshold
+            if within_peak and above_floor:
+                chips.use("TC")
+                return "TC"
+        elif ceiling > tc_ceiling_threshold:
             chips.use("TC")
             return "TC"
 
+    # ---- BB ----
     if chips.available("BB"):
         bench_pred = sum(p.xpts for p in sel_constrained.bench)
-        if bench_pred > bb_bench_threshold:
+        if future_bench_totals is not None and current_gw is not None:
+            future_vals = [v for g, v in future_bench_totals.items() if g > current_gw]
+            best_future = max(future_vals) if future_vals else 0.0
+            within_peak = bench_pred >= 0.90 * max(best_future, bench_pred)
+            above_floor = bench_pred >= bb_bench_threshold
+            if within_peak and above_floor:
+                chips.use("BB")
+                return "BB"
+        elif bench_pred > bb_bench_threshold:
             chips.use("BB")
             return "BB"
 
     return ""
+
+
+def _future_chip_estimates(
+    df_feat: pd.DataFrame,
+    preds: pd.Series,
+    preds_p90: pd.Series | None,
+    season: str,
+    gws: list[int],
+) -> tuple[dict[int, float], dict[int, float]]:
+    """For each future GW, estimate the best possible chip value:
+      - cap_ceilings[gw] = max P90 across all players in that GW's pool
+      - bench_totals[gw] = predicted total of ranks 11-15 (rough bench cover)
+    These represent "what if we had ideal chips set up for this GW".
+    """
+    cap_ceilings: dict[int, float] = {}
+    bench_totals: dict[int, float] = {}
+    for g in gws:
+        pool = build_players_for_gw(df_feat, preds, season, g,
+                                     ceiling_predictions=preds_p90)
+        if not pool:
+            continue
+        cap_ceilings[g] = max(
+            (p.ceiling_xpts if p.ceiling_xpts is not None else p.xpts) for p in pool
+        )
+        # Bench cover: players ranked 11-15 by xpts (proxy for "best bench possible")
+        sorted_by_xpts = sorted(pool, key=lambda p: -p.xpts)
+        bench_totals[g] = sum(p.xpts for p in sorted_by_xpts[10:15])
+    return cap_ceilings, bench_totals
 
 
 def _horizon_xpts_by_id(
@@ -253,6 +306,13 @@ def run_backtest(
     banked_ft = 0
     chips_state = ChipsState()
 
+    # Pre-compute per-GW best-possible chip values across the remaining season.
+    # Used by _decide_chip for "save chips for the peak GW" logic.
+    future_cap_ceilings, future_bench_totals = (
+        _future_chip_estimates(df_feat, preds, preds_p90, season, gws_to_play)
+        if use_chips else ({}, {})
+    )
+
     static_squad: list[Player] = []
 
     for gw in gws_to_play:
@@ -285,8 +345,12 @@ def run_backtest(
             # For WC consideration, compute an unconstrained pick (also w/ lookahead)
             sel_wildcard = pick_squad(agent_pool, lookahead_weight=lookahead_weight) \
                 if use_chips else None
-            chip_played = _decide_chip(sel_constrained, sel_wildcard, chips_state) \
-                if use_chips else ""
+            chip_played = _decide_chip(
+                sel_constrained, sel_wildcard, chips_state,
+                current_gw=gw,
+                future_cap_ceilings=future_cap_ceilings,
+                future_bench_totals=future_bench_totals,
+            ) if use_chips else ""
             sel = sel_wildcard if chip_played == "WC" else sel_constrained
 
         agent.per_gw.append(GWResult(

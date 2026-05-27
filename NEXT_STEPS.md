@@ -8,11 +8,17 @@ top-10k consistency.
 
 These don't require new data sources. ~1-3 days each.
 
-### 1. Smarter chip timing using fixture difficulty (~+1-2 /GW)
-**Status:** features added (`opp_attack`, `opp_defence`, etc.), but chip
-heuristics in `backtest.py` don't use them.
+### 1. ~~Smarter chip timing using fixture difficulty~~ DONE — negative result
+**Status:** shipped, see DECISIONS milestone 11.
+`_decide_chip` now uses FDR-aware "peak remaining" logic (90% tolerance +
+floor) instead of fixed thresholds. Chips fire on intuitively better GWs
+(mid-/late-season DGWs vs early-season noise), but total scoring barely
+moved (±0.2 /GW). Chip budget is structurally capped; smarter timing within
+that cap helps marginally, not dramatically.
 
-**Specific changes:**
+The original spec is preserved below for historical context:
+
+**Specific changes (originally planned):**
 - **Wildcard:** instead of "fire when constrained pick takes 2+ hits", fire
   on a detected *fixture turn* — when the next 3-5 GWs of FDR scores diverge
   sharply from the previous 3-5 (i.e., your current players have hard
