@@ -1,19 +1,28 @@
 # AI FPL Agent
 
-A fully autonomous Fantasy Premier League agent. Predicts per-player gameweek
-points, picks 15-man squads under all FPL constraints (£100m budget, formation,
-≤3 per club), plans transfers with hit-cost awareness, and plays chips
-strategically (Wildcard, Triple Captain, Bench Boost).
+A Fantasy Premier League decision agent. Predicts per-player gameweek points,
+picks 15-man squads under all FPL constraints (£100m budget, formation,
+≤3 per club), plans transfers with hit-cost awareness, plays chips
+strategically (Wildcard, Triple Captain, Bench Boost), and applies FPL
+auto-sub rules in scoring.
 
 **Current performance:** multi-season walk-forward backtest averages
-**65.0 pts/GW** — at the top-10k cutoff for the global FPL leaderboard.
+**65.3 pts/GW** — at the top-10k cutoff for the global FPL leaderboard.
 
 | Benchmark | pts/GW |
 |---|---:|
 | FPL global average | ~53 |
 | Top-10k cutoff | ~65 |
 | World #1 | ~75 |
-| **This agent (3-season avg)** | **65.0** |
+| **This agent (3-season avg)** | **65.3** |
+
+**Deployment posture: human-in-the-loop (HITL).** When deployed, the agent
+*recommends* weekly moves via a one-page report; the user clicks them in
+the FPL UI. This avoids any ambiguity around FPL's Terms & Conditions on
+automated submission while capturing ~99% of the value (the prediction +
+optimisation is the hard part). See [DECISIONS.md](./DECISIONS.md) for the
+full reasoning, and [NEXT_STEPS.md](./NEXT_STEPS.md) for the deployment
+build plan.
 
 ## Quickstart
 

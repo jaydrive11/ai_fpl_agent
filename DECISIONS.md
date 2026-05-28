@@ -406,6 +406,74 @@ respecting formation, skipping blanked bench, BB conflict.
 
 ---
 
+## Strategic decision: HITL deployment posture
+
+**Decision:** When deployed, the agent operates as **human-in-the-loop** —
+produces weekly recommendations that the user submits manually in the FPL UI.
+NOT fully autonomous (no automated POSTs to `/api/transfers/`).
+
+**Why:**
+- FPL's Terms & Conditions have language around automation/scripts/bots; the
+  exact current wording on fully-autonomous transfer submission is a gray area.
+- Manual analytics tools (FPLReview, Fantasy Football Hub, Mikkel Tokvam's
+  solver) are widely used and accepted. The line is at whether the tool
+  *submits* moves vs *recommends* them.
+- Risk of full autonomy: account ban, IP block, ToS violation. Not worth it
+  for the marginal time savings (clicking takes ~30 seconds weekly).
+- HITL captures ~99% of the value because the prediction + optimisation is
+  the hard part. Submitting is trivial.
+- No credentials needed for the read-only path: FPL's public endpoints let
+  us READ any user's team by `team_id` without auth.
+
+**How to apply:**
+- All deployment scripts use the read-only public API only
+- Output is a markdown recommendation (eventually email/Slack)
+- User retains full account control
+- The repository on GitHub is fine as-is; what matters is what we run
+  against a real account
+
+---
+
+## Plan: Season-transition handling
+
+The 2025-26 season ended; we have until mid-August 2026 to ship. Off-season
+brings five categories of change that don't currently get handled cleanly:
+
+| Change | Difficulty | Plan |
+|---|---|---|
+| **A. PL-internal transfers** (e.g., Mbeumo to Man U) | Easy | Name-match cross-season → carries history. Flag `new_team_this_season` for role-change awareness. |
+| **B. Foreign-league signings** (e.g., Wirtz to Liverpool) | Hard | Zero PL history. Rely on `value` + `position` + `team_strength`. Flag `is_first_pl_season` so model knows to lean on those features. |
+| **C. Promoted teams** (3 new clubs replace 3 relegated) | Medium | `teams.csv` auto-loads. Their players inherit cold-start treatment via `is_first_pl_season`. Add `team_is_newly_promoted` flag. |
+| **D. Manager changes** | Hard | Not detectable from Vaastav data alone. Proxy via team xG/xGC pattern divergence (slow). Real fix is news scraping (deferred). |
+| **E. Rule changes** (chip counts, transfer banking) | One-off | Check FPL's pre-season announcement; update `rules.py` if needed. |
+
+**What we can do with existing data:** cross-season name-matched priors +
+cold-start flags. Covers A, B, C reasonably well.
+
+**What we cannot do without external data:** D (manager changes),
+early-warning injuries (only proxy from realised minutes), foreign-league
+xG for signings like Wirtz. All deferred to the news-scraping milestone.
+
+**Implementation lives in NEXT_STEPS Phase 1 items #5 (cross-season
+features), #6 (annual rebuild script), #7 (initial squad mode).**
+
+---
+
+## Decision: Deploy for 2026-27 season (not current)
+
+**Decision:** Don't try to deploy mid-season — 2025-26 is over. Aim for GW1
+of 2026-27 (typically mid-August 2026).
+
+**Why:**
+- Current season has no remaining GWs to benefit from
+- Removes time pressure — can build cold-start features properly, validate
+  thoroughly, write good docs
+- Vaastav's 2026-27 data folder typically appears late July, giving us a
+  natural integration test point before going live
+- Allows full Phase 1 + Phase 2 (see NEXT_STEPS) rather than rushing
+
+---
+
 ## Engineering lessons (cross-cutting)
 
 ### 1. MAE is the wrong metric for FPL
